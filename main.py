@@ -242,20 +242,39 @@ class ServerManager:
             
             port_events = []
             ips = {}
+            ports = {}
             
             with open(SYSLOG_PATH, 'r') as f:
                 for line in f:
-                    if 'UFW' in line or 'kernel' in line and 'DROP' in line:
+                    # Проверяем UFW и iptables события
+                    if ('UFW' in line or 'IPTABLES' in line or 'kernel' in line) and ('DROP' in line or 'REJECT' in line):
                         try:
                             port_events.append(line.strip())
-                            # Попытка извлечь IP
+                            
+                            # Извлечение IP адреса
+                            ip = None
                             if 'SRC=' in line:
                                 parts = line.split('SRC=')
                                 if len(parts) > 1:
                                     ip = parts[1].split()[0]
-                                    if ip not in ips:
-                                        ips[ip] = 0
-                                    ips[ip] += 1
+                            
+                            if ip:
+                                if ip not in ips:
+                                    ips[ip] = 0
+                                ips[ip] += 1
+                            
+                            # Извлечение целевого порта (DPT)
+                            port = None
+                            if 'DPT=' in line:
+                                parts = line.split('DPT=')
+                                if len(parts) > 1:
+                                    port = parts[1].split()[0]
+                            
+                            if port:
+                                if port not in ports:
+                                    ports[port] = 0
+                                ports[port] += 1
+                                    
                         except:
                             pass
             
@@ -266,11 +285,16 @@ class ServerManager:
 Обнаружено {len(port_events)} отброшенных пакетов за 5 минут
 Порог: {PORT_SCAN_THRESHOLD}
 
-🌐 Источники атак:
+🌐 Источники атак (топ 5):
 """
                 top_ips = sorted(ips.items(), key=lambda x: x[1], reverse=True)[:5]
                 for ip, count in top_ips:
                     alert_msg += f"\n• {ip}: {count} пакетов"
+                
+                alert_msg += f"\n\n🎯 Сканируемые порты (топ 5):\n"
+                top_ports = sorted(ports.items(), key=lambda x: x[1], reverse=True)[:5]
+                for port, count in top_ports:
+                    alert_msg += f"\n• Порт {port}: {count} попыток"
                 
                 return alert_msg
             
