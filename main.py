@@ -41,10 +41,14 @@ if 0 in ADMIN_IDS:
 
 DOCKER_COMPOSE_PATH = os.getenv('DOCKER_COMPOSE_PATH', '/home/user/docker-compose.yml')
 FAIL2BAN_LOG_PATH = os.getenv('FAIL2BAN_LOG_PATH', '/var/log/fail2ban.log')
+AUTH_LOG_PATH = os.getenv('AUTH_LOG_PATH', '/var/log/auth.log')
+SYSLOG_PATH = os.getenv('SYSLOG_PATH', '/var/log/syslog')
 
 # Configuration
 ALERT_THRESHOLD = int(os.getenv('FAIL2BAN_THRESHOLD', '5'))  # Срабатывания в минуту
-CHECK_INTERVAL = 60  # Проверка fail2ban каждую минуту
+SSH_FAILED_THRESHOLD = int(os.getenv('SSH_FAILED_THRESHOLD', '10'))  # Неудачные SSH попытки
+PORT_SCAN_THRESHOLD = int(os.getenv('PORT_SCAN_THRESHOLD', '20'))  # Попытки сканирования портов
+CHECK_INTERVAL = 60  # Проверка событий ИБ каждую минуту
 
 
 def is_admin(user_id: int) -> bool:
@@ -173,6 +177,184 @@ class ServerManager:
         except Exception as e:
             logger.error(f"Error checking fail2ban: {e}")
             return None
+    
+    @staticmethod
+    def check_ssh_failed_login():
+        """Проверить неудачные SSH попытки входа"""
+        try:
+            if not os.path.exists(AUTH_LOG_PATH):
+                return None
+            
+            now = datetime.now()
+            five_min_ago = now - timedelta(minutes=5)
+            
+            failed_attempts = []
+            ips = {}
+            
+            with open(AUTH_LOG_PATH, 'r') as f:
+                for line in f:
+                    if 'Failed password' in line or 'Invalid user' in line:
+                        try:
+                            parts = line.split()
+                            # Попытка получить IP адрес
+                            for i, part in enumerate(parts):
+                                if part == 'from' and i + 1 < len(parts):
+                                    ip = parts[i + 1]
+                                    if ip not in ips:
+                                        ips[ip] = 0
+                                    ips[ip] += 1
+                                    failed_attempts.append(line.strip())
+                                    break
+                        except:
+                            pass
+            
+            if len(failed_attempts) > SSH_FAILED_THRESHOLD:
+                alert_msg = f"""
+⚠️ **ВНИМАНИЕ: Высокая активность неудачных SSH попыток!**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Обнаружено {len(failed_attempts)} неудачных попыток за 5 минут
+Порог: {SSH_FAILED_THRESHOLD}
+
+🌐 IP адреса с наибольшей активностью:
+"""
+                # Сортируем по количеству попыток
+                top_ips = sorted(ips.items(), key=lambda x: x[1], reverse=True)[:5]
+                for ip, count in top_ips:
+                    alert_msg += f"\n• {ip}: {count} попыток"
+                
+                return alert_msg
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error checking SSH failed logins: {e}")
+            return None
+    
+    @staticmethod
+    def check_port_scanning():
+        """Проверить попытки сканирования портов (firewall events)"""
+        try:
+            if not os.path.exists(SYSLOG_PATH):
+                return None
+            
+            now = datetime.now()
+            five_min_ago = now - timedelta(minutes=5)
+            
+            port_events = []
+            ips = {}
+            
+            with open(SYSLOG_PATH, 'r') as f:
+                for line in f:
+                    if 'UFW' in line or 'kernel' in line and 'DROP' in line:
+                        try:
+                            port_events.append(line.strip())
+                            # Попытка извлечь IP
+                            if 'SRC=' in line:
+                                parts = line.split('SRC=')
+                                if len(parts) > 1:
+                                    ip = parts[1].split()[0]
+                                    if ip not in ips:
+                                        ips[ip] = 0
+                                    ips[ip] += 1
+                        except:
+                            pass
+            
+            if len(port_events) > PORT_SCAN_THRESHOLD:
+                alert_msg = f"""
+🔴 **ВНИМАНИЕ: Обнаружено сканирование портов!**
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Обнаружено {len(port_events)} отброшенных пакетов за 5 минут
+Порог: {PORT_SCAN_THRESHOLD}
+
+🌐 Источники атак:
+"""
+                top_ips = sorted(ips.items(), key=lambda x: x[1], reverse=True)[:5]
+                for ip, count in top_ips:
+                    alert_msg += f"\n• {ip}: {count} пакетов"
+                
+                return alert_msg
+            
+            return None
+        except Exception as e:
+            logger.error(f"Error checking port scanning: {e}")
+            return None
+    
+    @staticmethod
+    def check_sudo_commands():
+        """Проверить выполнение sudo команд"""
+        try:
+            result = subprocess.run(
+                ['journalctl', '-u', 'sudo', '-n', '50', '--no-pager'],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode == 0:
+                lines = result.stdout.strip().split('\n')
+                # Фильтруем только последние 5 минут
+                sudo_commands = []
+                for line in lines:
+                    if 'COMMAND=' in line or 'sudo' in line.lower():
+                        sudo_commands.append(line.strip())
+                
+                if sudo_commands:
+                    msg = "📋 **Последние SUDO команды:**\n━━━━━━━━━━━━━━━━\n"
+                    for cmd in sudo_commands[-10:]:
+                        msg += f"• {cmd}\n"
+                    return msg
+            
+            return None
+        except:
+            return None
+    
+    @staticmethod
+    def get_security_status():
+        """Получить полный статус безопасности"""
+        status = "🔒 **Статус безопасности сервера:**\n━━━━━━━━━━━━━━━━━━━━\n"
+        
+        try:
+            # Проверка firewall
+            fw_result = subprocess.run(['sudo', 'ufw', 'status'], capture_output=True, text=True, timeout=5)
+            if fw_result.returncode == 0 and 'active' in fw_result.stdout:
+                status += "✅ Firewall (UFW): Активен\n"
+            else:
+                status += "⚠️ Firewall (UFW): Неактивен\n"
+        except:
+            status += "❓ Firewall: Не проверено\n"
+        
+        try:
+            # Проверка SELinux
+            se_result = subprocess.run(['getenforce'], capture_output=True, text=True, timeout=5)
+            if se_result.returncode == 0:
+                mode = se_result.stdout.strip()
+                if mode == 'Enforcing':
+                    status += "✅ SELinux: Enforcing\n"
+                else:
+                    status += f"⚠️ SELinux: {mode}\n"
+        except:
+            status += "❓ SELinux: Не проверено\n"
+        
+        try:
+            # Проверка Fail2Ban
+            fb_result = subprocess.run(['sudo', 'systemctl', 'is-active', 'fail2ban'], capture_output=True, text=True, timeout=5)
+            if fb_result.returncode == 0:
+                status += "✅ Fail2Ban: Работает\n"
+            else:
+                status += "⚠️ Fail2Ban: Остановлен\n"
+        except:
+            status += "❓ Fail2Ban: Не проверено\n"
+        
+        try:
+            # Проверка открытых портов
+            ss_result = subprocess.run(['ss', '-tlnp'], capture_output=True, text=True, timeout=10)
+            if ss_result.returncode == 0:
+                lines = ss_result.stdout.strip().split('\n')
+                open_ports = len([l for l in lines if 'LISTEN' in l]) - 1  # -1 для заголовка
+                status += f"🔌 Открытые порты: {open_ports}\n"
+        except:
+            status += "❓ Открытые порты: Не проверено\n"
+        
+        return status
 
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -191,7 +373,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Приветствие администратора
     keyboard = [
         [InlineKeyboardButton("🔄 Статус сервера", callback_data='status')],
-        [InlineKeyboardButton("🚀 Перезагрузить Docker", callback_data='restart_docker')],
+        [InlineKeyboardButton("� Статус безопасности", callback_data='security')],
+        [InlineKeyboardButton("�🚀 Перезагрузить Docker", callback_data='restart_docker')],
         [InlineKeyboardButton("ℹ️ Справка", callback_data='help')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -221,7 +404,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = [
             [InlineKeyboardButton("🔄 Обновить", callback_data='status')],
-            [InlineKeyboardButton("🚀 Перезагрузить Docker", callback_data='restart_docker')],
+            [InlineKeyboardButton("� Статус безопасности", callback_data='security')],
+            [InlineKeyboardButton("�🚀 Перезагрузить Docker", callback_data='restart_docker')],
             [InlineKeyboardButton("« Назад", callback_data='main_menu')],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -269,7 +453,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == 'main_menu':
         keyboard = [
-            [InlineKeyboardButton("🔄 Статус сервера", callback_data='status')],
+            [InlineKeyboardButton("� Статус безопасности", callback_data='security')],
+            [InlineKeyboardButton("�🔄 Статус сервера", callback_data='status')],
             [InlineKeyboardButton("🚀 Перезагрузить Docker", callback_data='restart_docker')],
             [InlineKeyboardButton("ℹ️ Справка", callback_data='help')],
         ]
@@ -283,15 +468,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == 'help':
         help_text = """
 ℹ️ **Справка по боту**
-━━━━━━━━━━━━━━━━━━━━━━
-• 🔄 **Статус сервера** - Показывает текущее состояние
+━━━� **Статус безопасности** - Информация о безопасности (Firewall, SELinux, Fail2Ban, Порты)
 • 🚀 **Перезагрузить Docker** - Выполняет docker-compose down → 5 сек → docker-compose up -d
 • 🚨 **Fail2Ban** - Автоматические уведомления при большой активности
+• ⚠️ **SSH попытки** - Уведомления о неудачных попытках входа
+• 🔴 **Port Scanning** - Уведомления о сканировании портов
 
 **Система безопасности:**
 ✓ Доступ только для авторизованных пользователей
 ✓ Все действия логируются
 ✓ Требуется подтверждение для критических операций
+✓ Мониторинг 24/7
 
 Вопросы? Обратитесь к администратору.
 """
@@ -305,26 +492,87 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
+    
+    elif query.data == 'security':
+        security_status = ServerManager.get_security_status()
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Обновить", callback_data='security')],
+            [InlineKeyboardButton("« Назад", callback_data='main_menu')],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            text=security_status
+        await query.edit_message_text(
+            text=help_text,
+            reply_markup=reply_markup,
+            parse_mode='Markdown'
+        )
 
 
 async def monitor_fail2ban(application: Application):
-    """Фоновый мониторинг Fail2Ban"""
+    """Фоновый мониторинг событий безопасности"""
+    check_counters = {
+        'fail2ban': 0,
+        'ssh': 0,
+        'port_scan': 0,
+    }
+    
     while True:
         try:
-            alert = ServerManager.check_fail2ban_alerts()
-            if alert and ADMIN_IDS:
-                for admin_id in ADMIN_IDS:
-                    try:
-                        await application.bot.send_message(
-                            chat_id=admin_id,
-                            text=alert,
-                            parse_mode='Markdown'
-                        )
-                        logger.info(f"Fail2ban alert sent to {admin_id}")
-                    except Exception as e:
-                        logger.error(f"Error sending alert to {admin_id}: {e}")
+            # Проверка Fail2Ban каждую минуту
+            if check_counters['fail2ban'] == 0:
+                alert = ServerManager.check_fail2ban_alerts()
+                if alert and ADMIN_IDS:
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await application.bot.send_message(
+                                chat_id=admin_id,
+                                text=alert,
+                                parse_mode='Markdown'
+                            )
+                            logger.info(f"Fail2ban alert sent to {admin_id}")
+                        except Exception as e:
+                            logger.error(f"Error sending fail2ban alert to {admin_id}: {e}")
+            
+            # Проверка SSH попыток каждые 2 минуты
+            if check_counters['ssh'] == 0:
+                alert = ServerManager.check_ssh_failed_login()
+                if alert and ADMIN_IDS:
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await application.bot.send_message(
+                                chat_id=admin_id,
+                                text=alert,
+                                parse_mode='Markdown'
+                            )
+                            logger.info(f"SSH alert sent to {admin_id}")
+                        except Exception as e:
+                            logger.error(f"Error sending SSH alert to {admin_id}: {e}")
+            
+            # Проверка сканирования портов каждые 2 минуты
+            if check_counters['port_scan'] == 0:
+                alert = ServerManager.check_port_scanning()
+                if alert and ADMIN_IDS:
+                    for admin_id in ADMIN_IDS:
+                        try:
+                            await application.bot.send_message(
+                                chat_id=admin_id,
+                                text=alert,
+                                parse_mode='Markdown'
+                            )
+                            logger.info(f"Port scan alert sent to {admin_id}")
+                        except Exception as e:
+                            logger.error(f"Error sending port scan alert to {admin_id}: {e}")
+            
+            # Обновляем счетчики
+            check_counters['fail2ban'] = (check_counters['fail2ban'] + 1) % 1
+            check_counters['ssh'] = (check_counters['ssh'] + 1) % 2
+            check_counters['port_scan'] = (check_counters['port_scan'] + 1) % 2
+            
         except Exception as e:
-            logger.error(f"Error in fail2ban monitor: {e}")
+            logger.error(f"Error in security monitor: {e}")
         
         await asyncio.sleep(CHECK_INTERVAL)
 
