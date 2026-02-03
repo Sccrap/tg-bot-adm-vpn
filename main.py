@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 import os
 import sys
@@ -373,8 +374,8 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Приветствие администратора
     keyboard = [
         [InlineKeyboardButton("🔄 Статус сервера", callback_data='status')],
-        [InlineKeyboardButton("� Статус безопасности", callback_data='security')],
-        [InlineKeyboardButton("�🚀 Перезагрузить Docker", callback_data='restart_docker')],
+        [InlineKeyboardButton("🔒 Статус безопасности", callback_data='security')],
+        [InlineKeyboardButton("🚀 Перезагрузить Docker", callback_data='restart_docker')],
         [InlineKeyboardButton("ℹ️ Справка", callback_data='help')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -404,8 +405,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         keyboard = [
             [InlineKeyboardButton("🔄 Обновить", callback_data='status')],
-            [InlineKeyboardButton("� Статус безопасности", callback_data='security')],
-            [InlineKeyboardButton("�🚀 Перезагрузить Docker", callback_data='restart_docker')],
+            [InlineKeyboardButton("🔒 Статус безопасности", callback_data='security')],
+            [InlineKeyboardButton("🚀 Перезагрузить Docker", callback_data='restart_docker')],
             [InlineKeyboardButton("« Назад", callback_data='main_menu')],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -453,8 +454,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == 'main_menu':
         keyboard = [
-            [InlineKeyboardButton("� Статус безопасности", callback_data='security')],
-            [InlineKeyboardButton("�🔄 Статус сервера", callback_data='status')],
+            [InlineKeyboardButton("🔄 Статус сервера", callback_data='status')],
+            [InlineKeyboardButton("🔒 Статус безопасности", callback_data='security')],
             [InlineKeyboardButton("🚀 Перезагрузить Docker", callback_data='restart_docker')],
             [InlineKeyboardButton("ℹ️ Справка", callback_data='help')],
         ]
@@ -503,12 +504,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(
-            text=security_status
-        await query.edit_message_text(
-            text=help_text,
+            text=security_status,
             reply_markup=reply_markup,
             parse_mode='Markdown'
         )
+        
 
 
 async def monitor_fail2ban(application: Application):
